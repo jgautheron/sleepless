@@ -32,7 +32,7 @@
 //
 // Build (mirrors Nexus.app): Command Line Tools `swiftc`, NO Xcode project.
 //   swiftc -O -parse-as-library -target arm64-apple-macos26.0 -framework AppKit \
-//          -framework ServiceManagement
+//          -framework ServiceManagement Pmset.swift App.swift
 //   File MUST be named App.swift and compiled -parse-as-library so the
 //   @main enum + @MainActor static main() entry is Swift-6 isolation-safe.
 import AppKit
@@ -388,9 +388,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     // Install the one-time scoped grant via a SINGLE native macOS authorization (the
-    // standard Touch ID / password sheet) — no Terminal. Runs the bundled, audited
-    // grant.sh as root through osascript's "with administrator privileges"; grant.sh is
-    // root-aware so it writes the sudoers drop-in directly with no inner sudo prompt.
+    // standard Touch ID / password sheet) — no Terminal. No file from the app bundle is
+    // executed as root: the rule is written here, then Apple's visudo and install act on it.
     // Returns true once the passwordless grant is in place; after that the app never asks again.
     @discardableResult
     private func installGrantViaAuth() -> Bool {
@@ -403,23 +402,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
         guard intro.runModal() == .alertFirstButtonReturn else { return false }
 
-        guard let res = Bundle.main.resourcePath else { return false }
-        let grant = res + "/grant.sh"
-        // Pass the REAL user: under the native auth sheet grant.sh runs as root with
-        // SUDO_USER unset, so without this the grant would be written for "root" (useless).
-        let shellCmd = "SLEEPLESS_USER='\(NSUserName())' /bin/bash '\(grant)' --yes"
-        // escape for an AppleScript string literal, then run with one native auth sheet
-        let escaped = shellCmd.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
-        let osa = "do shell script \"\(escaped)\" with administrator privileges"
+        let user = NSUserName()
+        guard SudoersRule.isAllowedUser(user) else {
+            notify("Couldn't set up the permission: this account name isn't supported.")
+            return false
+        }
+        // Nothing root runs comes from the bundle: we write the rule, then Apple's visudo
+        // and install act on it. A user-writable script run as root is root code execution.
+        let temp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sleepless-grant-\(UUID().uuidString)")
+        do {
+            try (SudoersRule.line(for: user) + "\n").write(to: temp, atomically: true, encoding: .utf8)
+        } catch {
+            notify("Couldn't prepare the permission file.")
+            return false
+        }
+        let command = SudoersRule.installCommand(tempPath: temp.path)
+        let osa = "do shell script \"\(AppleScriptLiteral.escape(command))\" with administrator privileges"
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
         proc.arguments = ["-e", osa]
         proc.standardOutput = Pipe(); proc.standardError = Pipe()
         do { try proc.run(); proc.waitUntilExit() }
         catch { notify("Couldn't start the one-time setup."); return false }
-        if proc.terminationStatus == 0 { return true }   // grant.sh installed the rule successfully
+        if proc.terminationStatus == 0 { return true }   // the rule is installed and sudoers parses
         if proc.terminationStatus != 128 {               // 128 = user cancelled the auth sheet
-            notify("Setup didn't complete. Try again, or run grant.sh from the app bundle.")
+            notify("Setup didn't complete. Try again, or run ./grant.sh from a clone.")
         }
         return false
     }
@@ -526,8 +534,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // auto-off safety net is live. Distinct menu-bar glyph (cup + dot).
         var armed = false
         if on {
-            let (onBattery, discharging, _) = batteryStatus()
-            armed = onBattery && discharging
+            let status = batteryStatus()
+            armed = status.onBattery && status.discharging
         }
         if let button = statusItem.button {
             let newImage = on ? (armed ? armedGlyph : onGlyph) : offGlyph
@@ -621,8 +629,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Battery + Low-Power-Mode safety nets (silent; no extra UI) — Feature 3
     private func enforceSafetyNets() {
-        let (onBattery, discharging, percent) = batteryStatus()
-        guard onBattery, discharging else { return }
+        let status = batteryStatus()
+        guard status.onBattery, status.discharging else { return }
+        // An unreadable level is unsafe by default: the promise is this cannot drain the Mac flat.
+        guard let percent = status.percent else {
+            setDisableSleep(false); userForcedOn = false
+            applyUI(on: readSleepDisabled())
+            notify("Couldn't read the battery level. Sleepless turned off to be safe.")
+            return
+        }
         // Hard battery floor ALWAYS wins, even over a deliberate turn-on: never drain to empty.
         if percent <= batteryFloorPercent {
             setDisableSleep(false); userForcedOn = false
@@ -638,32 +653,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    // MARK: - Readers (no root needed)
+    // MARK: - Readers (no root needed). The parsing itself lives in Pmset.swift, under test.
     private func readSleepDisabled() -> Bool {
-        let out = runCapture("/usr/bin/pmset", ["-g"])
-        for line in out.split(whereSeparator: { $0 == "\n" }) {
-            if line.range(of: "SleepDisabled", options: .caseInsensitive) != nil {
-                let toks = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
-                if let last = toks.last { return last == "1" }
-            }
-        }
-        return false   // line absent -> OFF
+        PmsetOutput.sleepDisabled(runCapture("/usr/bin/pmset", ["-g"]))
     }
 
-    private func batteryStatus() -> (onBattery: Bool, discharging: Bool, percent: Int) {
-        let out = runCapture("/usr/bin/pmset", ["-g", "batt"])
-        let onBattery = out.contains("Battery Power")
-        let discharging = out.range(of: "discharging", options: .caseInsensitive) != nil
-        var percent = 100
-        for tok in out.split(whereSeparator: { " \t\n;".contains($0) }) {
-            if tok.hasSuffix("%"), let v = Int(tok.dropLast()) { percent = v; break }
-        }
-        return (onBattery, discharging, percent)
+    private func batteryStatus() -> BatteryStatus {
+        PmsetOutput.battery(runCapture("/usr/bin/pmset", ["-g", "batt"]))
     }
 
     // MARK: - Notification (mirrors Nexus' osascript approach)
     private func notify(_ message: String) {
-        let script = "display notification \"\(message)\" with title \"Sleepless\" sound name \"Tink\""
+        let script = "display notification \"\(AppleScriptLiteral.escape(message))\" with title \"Sleepless\" sound name \"Tink\""
         _ = runCapture("/usr/bin/osascript", ["-e", script])
     }
 

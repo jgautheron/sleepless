@@ -24,7 +24,8 @@ echo ""
 echo "       $USER_NAME ALL=(root) NOPASSWD: /usr/bin/pmset -a disablesleep 0, /usr/bin/pmset -a disablesleep 1"
 echo ""
 echo "     That is the only thing it permits — turn lid-close sleep on or off. Nothing else."
-echo "  3. Add a login item (~/Library/LaunchAgents/$BUNDLE_ID.plist) so it starts at login."
+echo "  3. Remove any legacy login item (~/Library/LaunchAgents/$BUNDLE_ID.plist)."
+echo "     'Launch at login' is now the app's own SMAppService switch, off by default."
 echo ""
 read -r -p "Continue? [y/N] " reply
 case "$reply" in [yY]*) ;; *) echo "Aborted."; exit 1 ;; esac
@@ -37,24 +38,11 @@ DEST=/Applications "$REPO/build.sh" /Applications
 echo "==> Installing passwordless grant (you'll be asked for your password once)"
 "$REPO/grant.sh" --yes
 
-# 3. Login item.
-echo "==> Installing login item"
-mkdir -p "$HOME/Library/LaunchAgents"
-cat > "$LAUNCH_AGENT" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>            <string>$BUNDLE_ID</string>
-    <key>ProgramArguments</key> <array><string>/usr/bin/open</string><string>-a</string><string>$APP</string></array>
-    <key>RunAtLoad</key>        <true/>
-    <key>KeepAlive</key>        <false/>
-    <key>ProcessType</key>      <string>Interactive</string>
-</dict>
-</plist>
-PLIST
+# 3. Legacy login item: remove it. Two mechanisms disagreed — the app auto-launched from
+# this agent while its own SMAppService switch reported off.
+echo "==> Removing any legacy login item"
 launchctl bootout "gui/$(id -u)/$BUNDLE_ID" 2>/dev/null || true
-launchctl bootstrap "gui/$(id -u)" "$LAUNCH_AGENT" 2>/dev/null || true
+rm -f "$LAUNCH_AGENT"
 
 # Launch now.
 open "$APP"

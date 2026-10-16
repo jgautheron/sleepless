@@ -57,7 +57,7 @@ fi
 echo "==> Compiling App.swift"
 BIN_TMP="$(mktemp -d)"
 swiftc -O -parse-as-library -target "$TARGET" -framework AppKit -framework ServiceManagement \
-  "$REPO/App.swift" -o "$BIN_TMP/$APP_NAME"
+  "$REPO/Pmset.swift" "$REPO/App.swift" -o "$BIN_TMP/$APP_NAME"
 
 # 3. Assemble the bundle: Contents/{Info.plist, MacOS/<exe>, Resources/<name>.icns}
 echo "==> Assembling bundle"
@@ -67,15 +67,15 @@ cp "$REPO/Info.plist" "$CONTENTS/Info.plist"
 cp "$BIN_TMP/$APP_NAME" "$CONTENTS/MacOS/$APP_NAME"
 cp "$ICNS" "$CONTENTS/Resources/$APP_NAME.icns"
 chmod +x "$CONTENTS/MacOS/$APP_NAME"
-# Ship the grant + uninstall scripts inside the bundle so Homebrew-cask users (who get
-# only the .app) can run the one-time passwordless grant and a clean uninstall.
-cp "$REPO/grant.sh" "$REPO/uninstall.sh" "$CONTENTS/Resources/"
-chmod +x "$CONTENTS/Resources/grant.sh" "$CONTENTS/Resources/uninstall.sh"
+# Ship only the uninstaller. Nothing the app runs as root comes from the bundle: it writes
+# the sudoers rule itself and hands it to Apple's visudo and install.
+cp "$REPO/uninstall.sh" "$CONTENTS/Resources/"
+chmod +x "$CONTENTS/Resources/uninstall.sh"
 rm -rf "$BIN_TMP"
 
 # 4. Ad-hoc sign (no Apple Developer ID needed; trust comes from building it yourself).
 echo "==> Ad-hoc signing"
-codesign --force --deep --sign - "$APP"
+codesign --force --sign - "$APP"
 codesign --verify --verbose=1 "$APP" 2>&1 | sed 's/^/    /' || true
 
 echo ""

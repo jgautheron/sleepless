@@ -21,6 +21,10 @@ if [ -z "$USER_NAME" ] || [ "$USER_NAME" = "root" ]; then
   echo "error: could not resolve a non-root user for the grant; refusing to install." >&2
   exit 1
 fi
+# A sudoers line is built from this name, so refuse anything outside the account-name charset.
+case "$USER_NAME" in
+  *[!A-Za-z0-9._-]*|'') echo "error: refusing to write a sudoers rule for '$USER_NAME'." >&2; exit 1 ;;
+esac
 
 # Run privileged steps with sudo normally, but directly when we are ALREADY root (e.g. the
 # app installs this via one native macOS auth sheet, so there is no Terminal + no sudo prompt).
