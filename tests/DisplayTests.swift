@@ -1,5 +1,8 @@
 // DisplayTests.swift — holds the real display assertion and asks `pmset` whether it is there.
 // Run with ./test.sh; it needs no root and no GUI session.
+//
+// Checks are scoped to this process's pid, not to the assertion's name: the app legitimately holds
+// an assertion with the same name, so a name-only test fails whenever Sleepless is running.
 
 import Foundation
 
@@ -22,23 +25,21 @@ enum DisplayTests {
 
         blocker.set(active: false)
         check(!blocker.isHolding, "off by default")
-        check(!table().contains(DisplayAssertion.name), "nothing of ours in pmset while off")
+        check(ourLines().isEmpty, "nothing of ours in pmset while off")
 
         blocker.set(active: true)
         check(blocker.isHolding, "holds after set(true)")
-
-        let held = table()
-        check(held.contains(DisplayAssertion.name), "pmset names our assertion")
-        let ours = held.split(separator: "\n").first { $0.contains(DisplayAssertion.name) } ?? ""
-        check(ours.contains("PreventUserIdleDisplaySleep"), "and it is a display assertion")
+        check(ourLines().count == 1, "pmset lists exactly one assertion of ours")
+        check(ourLines().first?.contains(DisplayAssertion.name) == true, "and pmset names it")
+        check(ourLines().first?.contains("PreventUserIdleDisplaySleep") == true, "and it is a display assertion")
 
         blocker.set(active: true)
         check(blocker.isHolding, "set(true) twice stays holding")
-        check(occurrences(of: DisplayAssertion.name, in: table()) == 1, "and does not stack assertions")
+        check(ourLines().count == 1, "and does not stack a second assertion")
 
         blocker.release()
         check(!blocker.isHolding, "released")
-        check(!table().contains(DisplayAssertion.name), "gone from pmset after release")
+        check(ourLines().isEmpty, "gone from pmset after release")
 
         print("")
         if failures == 0 {
@@ -50,8 +51,12 @@ enum DisplayTests {
     }
 }
 
-private func occurrences(of needle: String, in haystack: String) -> Int {
-    haystack.components(separatedBy: needle).count - 1
+/// Assertion lines owned by this process — not merely lines mentioning our name.
+private func ourLines() -> [String] {
+    table()
+        .split(separator: "\n")
+        .map(String.init)
+        .filter { $0.contains("pid \(getpid())(") && $0.contains(DisplayAssertion.name) }
 }
 
 private func table() -> String {

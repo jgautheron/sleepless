@@ -8,7 +8,8 @@
 //   OFF: sudo pmset -a disablesleep 0
 //   READ (no root): pmset -g | grep -i SleepDisabled  (value 1 = ON; 0/absent = OFF)
 // While ON the app also holds an in-process PreventUserIdleDisplaySleep assertion, so the screen
-// stays awake the way KeepingYouAwake's `caffeinate -d` kept it; it dies with the process.
+// stays awake the way KeepingYouAwake's `caffeinate -d` kept it; it dies with the process. The
+// popover's "Keep the display awake" switch turns that off, and it is on by default.
 // The OFF/ON commands run passwordless via a tightly-scoped /etc/sudoers.d drop-in.
 // disablesleep is runtime-only and resets to 0 on reboot, and that reset is a
 // deliberate safety feature; the app does NOT auto re-arm.
@@ -47,6 +48,11 @@ private let floorKey = "batteryFloorPercent"
 private let floorDefault = 15
 private let floorMin = 5
 private let floorMax = 50
+
+// Keep-the-display-awake config (popover switch; persisted in UserDefaults). On by default: it is
+// what KeepingYouAwake's `caffeinate -d` did, and off means the screen sleeps and locks mid-run.
+private let displayKey = "keepDisplayAwake"
+private let displayDefault = true
 
 // MARK: - Menu-bar coffee glyph (native SF Symbols, MONOCHROME template — state by SHAPE)
 // macOS convention: a menu-bar extra is a template image (no colour) so it adapts to light/dark
@@ -163,8 +169,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var autoOffControl: NSSegmentedControl!
     private var countdownLabel: NSTextField!
     private var loginSwitch: NSSwitch!
+    private var displaySwitch: NSSwitch!
     private var clickMonitor: Any?
     private var batteryFloorPercent = floorDefault
+    private var keepDisplayAwake = displayDefault
     private var isOn = false
     private var userForcedOn = false   // user deliberately turned it on; honor over the Low Power Mode auto-off (the hard battery floor still wins)
 
@@ -175,11 +183,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var timerEndDate: Date?
 
     private let popoverWidth: CGFloat = 320
-    private let popoverHeight: CGFloat = 432
+    private let popoverHeight: CGFloat = 490
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         batteryFloorPercent = min(max((UserDefaults.standard.object(forKey: floorKey) as? Int) ?? floorDefault, floorMin), floorMax)
+        keepDisplayAwake = (UserDefaults.standard.object(forKey: displayKey) as? Bool) ?? displayDefault
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
             button.image = offGlyph
@@ -312,13 +321,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         loginSwitch.frame = NSRect(x: contentW - ci - swW, y: ci + (22 - swH) / 2, width: swW, height: swH)
         g4.addSubview(loginSwitch)
 
+        // GROUP 5 — keep the display awake too (on by default; the only way an unattended run stays
+        // visible, and without it the screen sleeps and the Mac locks mid-job)
+        let g5y = g4y + g4h + 12, g5h: CGFloat = 46
+        let g5 = makeCard(NSRect(x: pad, y: g5y, width: contentW, height: g5h))
+        let displayLabel = makeLabel("Keep the display awake", font: .systemFont(ofSize: 13), color: .labelColor)
+        displayLabel.frame = NSRect(x: ci, y: ci, width: cw - swW - 8, height: 22)
+        g5.addSubview(displayLabel)
+        displaySwitch = NSSwitch()
+        displaySwitch.target = self
+        displaySwitch.action = #selector(displayToggled(_:))
+        displaySwitch.state = keepDisplayAwake ? .on : .off
+        displaySwitch.frame = NSRect(x: contentW - ci - swW, y: ci + (22 - swH) / 2, width: swW, height: swH)
+        g5.addSubview(displaySwitch)
+
         // Footer — Quit (separated by space, not a hairline)
         let quit = NSButton(title: "Quit Sleepless", target: self, action: #selector(quit))
         quit.controlSize = .regular
         quit.bezelStyle = .rounded
         quit.sizeToFit()
         let qs = quit.frame.size
-        quit.frame = NSRect(x: W - pad - qs.width, y: g4y + g4h + 12, width: qs.width, height: qs.height)
+        quit.frame = NSRect(x: W - pad - qs.width, y: g5y + g5h + 12, width: qs.width, height: qs.height)
         root.addSubview(quit)
 
         let vc = NSViewController()
@@ -513,6 +536,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         countdownLabel?.stringValue = "Auto-off in \(t)"
     }
 
+    // MARK: - Keep the display awake (popover switch; applies to a live session immediately)
+    @objc private func displayToggled(_ sender: NSSwitch) {
+        keepDisplayAwake = sender.state == .on
+        UserDefaults.standard.set(keepDisplayAwake, forKey: displayKey)
+        applyUI(on: readSleepDisabled())   // apply now rather than at the next poll
+    }
+
     // MARK: - Launch at login (Feature 2) — OFF by default; never re-enables sleep prevention
     @objc private func loginToggled(_ sender: NSSwitch) {
         do {
@@ -536,9 +566,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func applyUI(on: Bool) {
         isOn = on
-        // ON keeps the screen awake too, so a long run stays visible: every path that decides the
-        // state funnels through here, including the timer, the battery floor and the launch read.
-        displayBlocker.set(active: on)
+        // ON keeps the screen awake too, unless the switch says otherwise: every path that decides
+        // the state funnels through here — the timer, the battery floor and the launch read included.
+        displayBlocker.set(active: on && keepDisplayAwake)
         if !on { cancelKeepAwakeTimer() }   // going OFF clears any countdown/timer
         // ARMED = kept awake while actively discharging on battery, so the
         // auto-off safety net is live. Distinct menu-bar glyph (cup + dot).
@@ -560,6 +590,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 : "Sleepless: off. Sleeps normally."
         }
         toggleSwitch?.state = on ? .on : .off
+        displaySwitch?.state = keepDisplayAwake ? .on : .off
         // Brand-violet accent communicates the privileged "awake" state at a glance.
         mainCard?.active = on
         headerMark?.contentTintColor = on ? brandAccentSoft : .labelColor
