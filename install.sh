@@ -44,10 +44,14 @@ echo "==> Removing any legacy login item"
 launchctl bootout "gui/$(id -u)/$BUNDLE_ID" 2>/dev/null || true
 rm -f "$LAUNCH_AGENT"
 
-# Launch now.
-open "$APP"
-
+# Launch now, but only as the user: a root context has no GUI session, so `open` fails there
+# with "Could not find specified domain" and, under `set -e`, aborts the install after it succeeded.
 echo ""
-echo "✅ Installed. The coffee cup is in your menu bar — click it to toggle."
+if [ "$(id -u)" -eq 0 ]; then
+  echo "✅ Installed. Launch it as your own user: open \"$APP\""
+else
+  open "$APP"
+  echo "✅ Installed. The coffee cup is in your menu bar — click it to toggle."
+fi
 echo "   Turn ON, close the lid: your Mac stays awake on battery (auto-off at the floor you set)."
 echo "   To remove everything (including the grant): ./uninstall.sh"
