@@ -7,6 +7,8 @@
 //   ON : sudo pmset -a disablesleep 1
 //   OFF: sudo pmset -a disablesleep 0
 //   READ (no root): pmset -g | grep -i SleepDisabled  (value 1 = ON; 0/absent = OFF)
+// While ON the app also holds an in-process PreventUserIdleDisplaySleep assertion, so the screen
+// stays awake the way KeepingYouAwake's `caffeinate -d` kept it; it dies with the process.
 // The OFF/ON commands run passwordless via a tightly-scoped /etc/sudoers.d drop-in.
 // disablesleep is runtime-only and resets to 0 on reboot, and that reset is a
 // deliberate safety feature; the app does NOT auto re-arm.
@@ -32,7 +34,7 @@
 //
 // Build (mirrors Nexus.app): Command Line Tools `swiftc`, NO Xcode project.
 //   swiftc -O -parse-as-library -target arm64-apple-macos26.0 -framework AppKit \
-//          -framework ServiceManagement Pmset.swift App.swift
+//          -framework ServiceManagement Pmset.swift DisplayAssertion.swift App.swift
 //   File MUST be named App.swift and compiled -parse-as-library so the
 //   @main enum + @MainActor static main() entry is Swift-6 isolation-safe.
 import AppKit
@@ -144,6 +146,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let onGlyph = makeCupGlyph(.on)
     private let offGlyph = makeCupGlyph(.off)
     private let armedGlyph = makeCupGlyph(.armed)
+    private let displayBlocker = DisplaySleepBlocker()
+
+    func applicationWillTerminate(_ notification: Notification) {
+        displayBlocker.release()   // the kernel drops it with the process anyway; this is explicit
+    }
 
     // Popover UI
     private let popover = NSPopover()
@@ -529,6 +536,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func applyUI(on: Bool) {
         isOn = on
+        // ON keeps the screen awake too, so a long run stays visible: every path that decides the
+        // state funnels through here, including the timer, the battery floor and the launch read.
+        displayBlocker.set(active: on)
         if !on { cancelKeepAwakeTimer() }   // going OFF clears any countdown/timer
         // ARMED = kept awake while actively discharging on battery, so the
         // auto-off safety net is live. Distinct menu-bar glyph (cup + dot).

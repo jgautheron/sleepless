@@ -32,6 +32,21 @@ Upstream is a remote here, so a fix made in this fork can be sent upstream uncha
   gap against a helper-based design.
 - The auto-off timer and the "user forced this on" flag remain in memory only.
 
+## Added on top of upstream: the display stays awake too
+
+Upstream only blocks *system* sleep, so the screen still went dark on the display-sleep timer — and on a
+managed Mac that locks it immediately (MDM sets `askForPassword` with no delay). KeepingYouAwake held
+`caffeinate -di`, whose `-d` kept the display awake, so replacing it with this app quietly changed that.
+
+While the toggle is ON the app now holds an in-process `PreventUserIdleDisplaySleep` assertion named
+`Sleepless: keeping the display awake`. In-process, so the kernel drops it with the app and a crash
+cannot leave the screen unable to sleep. Every state path funnels through `applyUI(on:)`, so the auto-off
+timer, the battery floor and Low Power Mode release it too. `tests/DisplayTests.swift` asks `pmset` for it.
+
+This does **not** defeat the screensaver: its idle timer is a separate clock (20 minutes here, set by
+MDM), and an IOKit display assertion does not reset it. `IOPMAssertionDeclareUserActivity` — what
+`caffeinate -u` does — is the lever if that ever matters.
+
 ## Checks
 
 ```sh
