@@ -4,6 +4,8 @@ This is a public fork of [Aboudjem/Sleepless](https://github.com/Aboudjem/Sleepl
 (MIT, © Adam Boudjemaa). Upstream is kept as the `upstream` remote; `git log upstream/main` is the
 unmodified lineage. Nothing here removes the original licence or copyright.
 
+Work lands through pull requests against `main`, which starts as upstream's unmodified `v1.2.7`.
+
 The app does what upstream does: one menu-bar switch that flips `pmset disablesleep` so a MacBook
 keeps running with the lid shut, with an auto-off timer, a battery floor, and a battery/Low-Power-Mode
 safety net. The fork is a security pass over the privilege path.
